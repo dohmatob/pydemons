@@ -107,8 +107,8 @@ def jacobian(sx, sy):
 def energy(fixed, moving, sx, sy, sigma_i, sigma_x):
     """Compute energy of current configuration."""
     # intensity difference
-    moving_prime = iminterpolate(moving, sx=sx, sy=sy)
-    diff2 = (fixed - moving_prime) ** 2
+    warped = iminterpolate(moving, sx=sx, sy=sy)
+    diff2 = (fixed - warped) ** 2
     area = np.prod(moving.shape) * 1.
 
     # deformation gradient
@@ -134,13 +134,13 @@ def findupdate(fixed, moving, vx, vy, sigma_i, sigma_x):
     [sx, sy] = expfield(vx, vy)
 
     # interpolate updated moving image
-    moving_prime = iminterpolate(moving, sx=sx, sy=sy)
+    warped = iminterpolate(moving, sx=sx, sy=sy)
 
     # image intensity difference
-    diff = fixed - moving_prime
+    diff = fixed - warped
 
     # moving image gradient
-    gx, gy = np.gradient(moving_prime)
+    gx, gy = np.gradient(warped)
     normg2 = gx ** 2 + gy ** 2  # squared norm of moving image gradient
 
     # update is (idiff / (||J|| ** 2 + (idiff / sigma_x) ** 3) J, where
@@ -153,18 +153,23 @@ def findupdate(fixed, moving, vx, vy, sigma_i, sigma_x):
 
     # zero-out nonoverlapping zones
     anti_fixed = (fixed == 0.)
-    anti_moving_prime = (moving_prime == 0.)
+    anti_warped = (warped == 0.)
     gx[anti_fixed] = 0.
-    gx[anti_moving_prime] = 0.
+    gx[anti_warped] = 0.
     gy[anti_fixed] = 0.
-    gy[anti_moving_prime] = 0.
+    gy[anti_warped] = 0.
 
     return gx, gy
 
 
+def imagecrop(im, lim_x, lim_y):
+    """Crop image to fit given bounding box."""
+    return im[lim_x[0]:lim_x[1], lim_y[0]:lim_y[1]]
+
+
 def register(fixed, moving, sigma_fluid=1., sigma_diffusion=1., sigma_i=1.,
              sigma_x=1., niter=250, vx=None, vy=None, stop_criterion=.01,
-             imagepad_scale=1.2):
+             imagepad_scale=1.2, callback=None):
     """Register moving image to moving image via log-domains diffeo demons."""
     shape = fixed.shape
     # init velocity
@@ -177,6 +182,7 @@ def register(fixed, moving, sigma_fluid=1., sigma_diffusion=1., sigma_i=1.,
     if not (fixed.shape == moving.shape == vx.shape == vy.shape):
         raise RuntimeError(
             "Images and velocity are shape-inconsistent!")
+    orig_fixed = fixed
     fixed, (lim_x, lim_y) = imagepad(fixed, imagepad_scale)
     moving, _ = imagepad(moving, imagepad_scale)
     vx, _ = imagepad(vx, imagepad_scale)
@@ -214,6 +220,12 @@ def register(fixed, moving, sigma_fluid=1., sigma_diffusion=1., sigma_i=1.,
             sx_min = sx
             sy_min = sy
 
+        # invoke callback
+        if callback and k % 5 == 0:
+            callback(dict(fixed=orig_fixed,
+                          warped=imagecrop(iminterpolate(moving, sx=sx, sy=sy),
+                                           lim_x, lim_y)))
+
         # check convergence
         if k > 0 and abs(e - energies[max(0, k - 5)]) < \
            energies[0] * stop_criterion:
@@ -221,19 +233,19 @@ def register(fixed, moving, sigma_fluid=1., sigma_diffusion=1., sigma_i=1.,
             break
 
     # apply optimal deformation to moving image
-    moving_prime = iminterpolate(moving, sx=sx, sy=sy)
+    warped = iminterpolate(moving, sx=sx, sy=sy)
 
     # unpad velocity, deformation, and deformed moving image
-    vx_min = vx_min[lim_x[0]:lim_x[1], lim_y[0]:lim_y[1]]
-    vy_min = vy_min[lim_x[0]:lim_x[1], lim_y[0]:lim_y[1]]
-    sx_min = sx_min[lim_x[0]:lim_x[1], lim_y[0]:lim_y[1]]
-    sy_min = sy_min[lim_x[0]:lim_x[1], lim_y[0]:lim_y[1]]
-    moving_prime = moving_prime[lim_x[0]:lim_x[1], lim_y[0]:lim_y[1]]
+    vx_min = imagecrop(vx_min, lim_x, lim_y)
+    vy_min = imagecrop(vy_min, lim_x, lim_y)
+    sx_min = imagecrop(sx_min, lim_x, lim_y)
+    sy_min = imagecrop(sy_min, lim_x, lim_y)
+    warped = warped[lim_x[0]:lim_x[1], lim_y[0]:lim_y[1]]
     if not (fixed.shape == moving.shape == vx.shape == vy.shape):
         raise RuntimeError(
             "Images and velocity are shape-inconsistent!")
 
-    return moving_prime, sx_min, sy_min, vx_min, vy_min, energies
+    return warped, sx_min, sy_min, vx_min, vy_min, energies
 
 
 def imresize(im, scale):
@@ -243,7 +255,7 @@ def imresize(im, scale):
 
 def demons(fixed, moving, nlevel=3, sigma_fluid=1., sigma_diffusion=1.,
            sigma_i=1., sigma_x=1., niter=250, vx=None, vy=None,
-           stop_criterion=.01, imagepad_scale=1.2):
+           stop_criterion=.01, imagepad_scale=1.2, callback=None):
     """Multi-resolution demons algorithm."""
     # init velocity
     if vx is None:
@@ -266,7 +278,7 @@ def demons(fixed, moving, nlevel=3, sigma_fluid=1., sigma_diffusion=1.,
             fixed_, moving_, sigma_fluid=sigma_fluid,
             sigma_diffusion=sigma_diffusion, sigma_i=sigma_i, sigma_x=sigma_x,
             niter=niter, vx=vx_, vy=vy_, stop_criterion=stop_criterion,
-            imagepad_scale=imagepad_scale)
+            imagepad_scale=imagepad_scale, callback=callback)
 
         # upsample
         vx = imresize(vx_ / scale, shape / np.array(vx_.shape))
@@ -361,43 +373,3 @@ def test_findupdate():
     ux, uy = findupdate(fixed, moving, vx, vy, 1, 1)
     np.testing.assert_array_almost_equal(ux, [[0., -.333333], [.222222, 0.]])
     np.testing.assert_array_almost_equal(uy, [[0., .333333], [-.222222, 0.]])
-
-
-if __name__ == "__main__":
-    # load data
-    from PIL import Image
-    fixed = Image.open(
-        "/home/elvis/CODE/FORKED/demons/demons/demons2d/data/lenag2.png")
-    fixed = np.array(fixed, dtype=np.float)
-    moving = Image.open(
-        "/home/elvis/CODE/FORKED/demons/demons/demons2d/data/lenag1.png")
-    moving = np.array(moving, dtype=np.float)
-
-    # plot input images
-    plt.figure()
-    plt.gray()
-    ax = plt.subplot(141)
-    ax.set_title("fixed")
-    plt.axis("off")
-    ax.imshow(fixed)
-    ax = plt.subplot(142)
-    ax.set_title("moving")
-    plt.axis("off")
-    ax.imshow(moving)
-
-    # run demons (log-domains diffeo)
-    sx, sy, vx, vy = demons(fixed, moving, )
-    warped = iminterpolate(moving, sx=sx, sy=sy)
-
-    # plot warped image and difference to fixed image
-    diff = warped - fixed
-    ax = plt.subplot(143)
-    ax.set_title("warped")
-    ax.axis("off")
-    warped_thumb = ax.imshow(warped)
-    ax = plt.subplot(144)
-    ax.set_title("diff")
-    ax.axis("off")
-    ax.imshow(diff)
-
-    plt.show()
