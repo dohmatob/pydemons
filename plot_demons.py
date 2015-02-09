@@ -21,7 +21,7 @@ if __name__ == "__main__":
     plt.axis("off")
     ax.imshow(moving)
 
-    # run demons (log-domains diffeo)
+    # run demons
     warped = moving
     diff = warped - fixed
     ax = plt.subplot(143)
@@ -43,4 +43,4 @@ if __name__ == "__main__":
         diff_thumb.set_data(diff)
         plt.draw()
 
-    demons(fixed, moving, callback=_callback, niter=100)
+    demons(fixed, moving, callback=_callback, nlevel=8)

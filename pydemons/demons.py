@@ -4,8 +4,10 @@ How about log-doman diffeomorphic demons in pure python ;)
 # Author: DOHMATOB Elvis Dopgima
 
 import numpy as np
-from scipy import ndimage
-import matplotlib.pyplot as plt
+from scipy import ndimage, linalg
+
+# 'texture' of floats in machine-precision
+EPS = np.finfo(float).eps
 
 
 def imagepad(im, scale=2.):
@@ -33,7 +35,11 @@ def _deformed_grid(grid, sx, sy):
 
 
 def iminterpolate(im, grid=None, sx=None, sy=None, new_grid=None):
-    """Interpolate image (2D)."""
+    """Interpolate image (2D).
+
+    Interpolation is by far the most costly operation in the whole
+    algorithm.
+    """
     # make grids for interpolation
     im = np.array(im, dtype=np.float)
     shape = im.shape
@@ -43,7 +49,7 @@ def iminterpolate(im, grid=None, sx=None, sy=None, new_grid=None):
         new_grid = _deformed_grid(grid, sx, sy)
 
     # interpolate
-    return ndimage.map_coordinates(im, new_grid, order=1)
+    return ndimage.map_coordinates(im, new_grid, order=1, mode="constant")
 
 
 def compose(ax, ay, bx, by):
@@ -145,13 +151,13 @@ def findupdate(fixed, moving, vx, vy, sigma_i, sigma_x):
 
     # update is (idiff / (||J|| ** 2 + (idiff / sigma_x) ** 3) J, where
     # idiff := sigma_i * fixed(x) - moving(x + s) and J = grad(moving(x + s))
-    scale = diff / (normg2 + ((diff * sigma_i) / sigma_x) ** 2)
+    scale = diff / (EPS + normg2 + ((diff * sigma_i) / sigma_x) ** 2)
     scale[normg2 == 0.] = 0.
     scale[diff == 0.] = 0.
     gx *= scale
     gy *= scale
 
-    # zero-out nonoverlapping zones
+    # zero-out non-overlapping zones
     anti_fixed = (fixed == 0.)
     anti_warped = (warped == 0.)
     gx[anti_fixed] = 0.
@@ -167,10 +173,38 @@ def imagecrop(im, lim_x, lim_y):
     return im[lim_x[0]:lim_x[1], lim_y[0]:lim_y[1]]
 
 
-def register(fixed, moving, sigma_fluid=1., sigma_diffusion=1., sigma_i=1.,
-             sigma_x=1., niter=250, vx=None, vy=None, stop_criterion=.01,
-             imagepad_scale=1.2, callback=None):
-    """Register moving image to moving image via log-domains diffeo demons."""
+def bch(vx, vy, ux, uy, order=1):
+    """Backer-Campbell-Hausdorf approximation of log(exp(v) o exp(u)).
+
+    Paremeters
+    ----------
+    order: int, which is 1 or 2
+        Number of terms retained in the approximation. order=1 corresponds
+        to a commutativity assumption.
+    """
+    if not order in [1, 2]:
+        raise ValueError("BCH: `order` must be 1 or 2. Got %i." % order)
+    if order == 1:
+        vx += ux
+        vy += uy
+    else:
+        jacu = linalg.det(jacobian(ux, uy))
+        jacv = linalg.det(jacobian(vx, vy))
+        vx += ux + .5 * (jacv * ux - jacu * vx)
+        vy += uy + .5 * (jacv * uy - jacu * vy)
+    return vx, vy
+
+
+def register(fixed, moving, symmetric=True, sigma_fluid=1., sigma_diffusion=1.,
+             sigma_i=1., sigma_x=1., niter=250, vx=None, vy=None,
+             stop_criterion=.01, imagepad_scale=1.2, callback=None):
+    """Register moving image to moving image via log-domains diffeo demons.
+
+    Parameters
+    ----------
+    symmetric: bool (optional, default True)
+        If True, then symmetrized energy will be used.
+    """
     shape = fixed.shape
     # init velocity
     if vx is None:
@@ -189,21 +223,24 @@ def register(fixed, moving, sigma_fluid=1., sigma_diffusion=1., sigma_i=1.,
     vy, _ = imagepad(vy, imagepad_scale)
 
     # main loop
-    step = sigma_x
     e = np.inf
     e_min = e
     energies = []
     for k in xrange(niter):
-        print "Iter %03i/%03i: energy=%g" % (k + 1, niter, e)
-
-        # find and smooth demons force field update
-        ux, uy = findupdate(fixed, moving, vx, vy, sigma_i, sigma_x)
+        # find demons force field update and then smooth
+        ux_forw, uy_forw = findupdate(fixed, moving, vx, vy, sigma_i, sigma_x)
+        if not symmetric:
+            ux, uy = ux_forw, uy_forw
+        else:
+            # symmetric regime: compute backward force field, then average
+            ux_back, uy_back = findupdate(moving, fixed, -vx, -vy, sigma_i,
+                                          sigma_x)
+            ux, uy = .5 * (ux_forw - ux_back), .5 * (uy_forw - uy_back)
         ux = imgaussian(ux, sigma_fluid)
         uy = imgaussian(uy, sigma_fluid)
 
-        # update velocity (additive demons) and then smooth
-        vx += step * ux
-        vy += step * uy
+        # update velocity (= log(exp(v) o exp(u))) and then smooth
+        vx, vy = bch(vx, vy, ux, uy, order=2)
         vx = imgaussian(vx, sigma_diffusion)
         vy = imgaussian(vy, sigma_diffusion)
 
@@ -221,7 +258,8 @@ def register(fixed, moving, sigma_fluid=1., sigma_diffusion=1., sigma_i=1.,
             sy_min = sy
 
         # invoke callback
-        if callback and k % 5 == 0:
+        print "Iter %03i/%03i: energy=%g" % (k + 1, niter, e)
+        if callback and k % 10 == 0:
             callback(dict(fixed=orig_fixed,
                           warped=imagecrop(iminterpolate(moving, sx=sx, sy=sy),
                                            lim_x, lim_y)))
@@ -253,21 +291,27 @@ def imresize(im, scale):
     return ndimage.zoom(im, scale, order=1, prefilter=True)
 
 
-def demons(fixed, moving, nlevel=3, sigma_fluid=1., sigma_diffusion=1.,
-           sigma_i=1., sigma_x=1., niter=250, vx=None, vy=None,
-           stop_criterion=.01, imagepad_scale=1.2, callback=None):
-    """Multi-resolution demons algorithm."""
+def demons(fixed, moving, nlevel=3, symmetric=True, sigma_fluid=1.,
+           sigma_diffusion=1., sigma_i=1., sigma_x=1., niter=250, vx=None,
+           vy=None, stop_criterion=.01, imagepad_scale=1.2, callback=None):
+    """Multi-resolution demons algorithm.
+
+    Parameters
+    ----------
+    symmetric: bool (optional, default True)
+        If True, then symmetrized energy will be used.
+    """
     # init velocity
     if vx is None:
         vx = np.zeros(fixed.shape, dtype=np.float)
     if vy is None:
         vy = np.zeros(fixed.shape, dtype=np.float)
 
-    # multi-resolution loop
+    # multi-resolution loop in decreasing powers of 2
     shape = np.array(fixed.shape, dtype=np.float)
     scale = 1. / 2 ** (nlevel - 1)
     for _ in xrange(nlevel):
-        # downsample
+        # downsample images and velocities
         fixed_ = imresize(fixed, scale)
         moving_ = imresize(moving, scale)
         vx_ = imresize(vx * scale, scale)
@@ -275,7 +319,7 @@ def demons(fixed, moving, nlevel=3, sigma_fluid=1., sigma_diffusion=1.,
 
         # register
         _, _, _, vx_, vy_, _ = register(
-            fixed_, moving_, sigma_fluid=sigma_fluid,
+            fixed_, moving_, symmetric=symmetric, sigma_fluid=sigma_fluid,
             sigma_diffusion=sigma_diffusion, sigma_i=sigma_i, sigma_x=sigma_x,
             niter=niter, vx=vx_, vy=vy_, stop_criterion=stop_criterion,
             imagepad_scale=imagepad_scale, callback=callback)
@@ -287,89 +331,3 @@ def demons(fixed, moving, nlevel=3, sigma_fluid=1., sigma_diffusion=1.,
 
     sx, sy = expfield(vx, vy)
     return sx, sy, vx, vy
-
-
-def test_iminterpolate():
-    im = np.array([[1., 4., 5.], [0., 2., 1.], [-1., 0., 10.]])
-    sx = np.array([[.5, .5, -2.], [0., 0., 1.], [2., 0., .5]])
-    sy = np.array([[0., 0., -.5], [0., .5, 0.], [0., 0., .1]])
-    np.testing.assert_array_equal(iminterpolate(im, sx=sx, sy=sy),
-                                  [[.5, 3., 0.], [0., 1.5, 10.],
-                                   [0., 0., 0.]])
-
-
-def test_compose():
-    ax = np.array([[.5, .5, -2.], [0., 0., 1.], [2., 0., .5]])
-    ay = np.array([[0., 0., -.5], [0., .5, 0.], [0., 0., .1]])
-    bx = .5 * ax
-    by = .5 * ay
-    vx, vy = compose(ax, ay, bx, by)
-    np.testing.assert_array_equal(vx, ax)
-    np.testing.assert_array_equal(vy, ay)
-    np.testing.assert_array_equal(vx, [[.625, .625, -2.], [0., .25, 1.25],
-                                       [2., 0., .5]])
-    np.testing.assert_array_equal(vy, [[0., .125, -.5], [0., .625, .05],
-                                       [0., 0., .1]])
-
-
-def test_expfield():
-    vx = np.array([[1., 2.], [3., 4.]])
-    vy = np.array([[4., 3.], [2., 1.]])
-    ex, ey = expfield(vx, vy)
-    np.testing.assert_array_almost_equal(ex, [[.4824, .125], [.1875, .25]],
-                                         decimal=4)
-    np.testing.assert_array_almost_equal(ey, [[1.0254, .1875], [.125, .0625]],
-                                         decimal=4)
-
-
-def test_jacobian():
-    vx = np.array([[1., 2.], [3., 4.]])
-    vy = np.array([[4., 3.], [2., 1.]])
-    np.testing.assert_array_equal(jacobian(vx, vy), 2)
-    np.testing.assert_array_equal(jacobian(vy, vy), -2.)
-    np.testing.assert_array_equal(jacobian(vx, vx), 4.)
-    np.testing.assert_array_equal(jacobian(vx, vy * 0.), 3.)
-    np.testing.assert_array_equal(jacobian(vx * 0., vy), 0.)
-    np.testing.assert_array_equal(jacobian(vy, vy * 0.), -1.)
-
-
-def test_imagepad():
-    # test that scale <= 1 means no scaling
-    im = np.random.randn(3, 4)
-    for scale in [0., .1, .5, .6, 1.]:
-        np.testing.assert_array_equal(im, imagepad(im, scale=scale)[0])
-
-    # test scale=2 is default
-    im = np.array([[1., 2.], [3., 4.]])
-    np.testing.assert_array_equal(imagepad(im, 2.)[0], imagepad(im)[0])
-    np.testing.assert_array_equal(imagepad(im, 2.)[1], imagepad(im)[1])
-
-    # misc tests
-    np.testing.assert_array_equal(imagepad(im, 1.2)[0], [[1, 2, 0], [3, 4, 0],
-                                                         [0, 0, 0]])
-    np.testing.assert_array_equal(imagepad(im, 2.)[0],
-                                  [[0, 0, 0, 0], [0, 1, 2, 0],
-                                   [0, 3, 4, 0], [0, 0, 0, 0]])
-
-
-def test_energy():
-    im = np.array([[1., 2.], [3., 4.]])
-    np.testing.assert_almost_equal(energy(im, im, im, im, 1., 1.), 25.5)
-    np.testing.assert_almost_equal(energy(im, im, im, im, 2., 3.), 16.6111111)
-
-
-def test_imgaussian():
-    im = np.array([[1., 2.], [3., 4.]])
-    np.testing.assert_array_almost_equal(imgaussian(im, 1.), [[.876, .977],
-                                                              [1.077, 1.178]],
-                                         decimal=3)
-
-
-def test_findupdate():
-    fixed = np.array([[1., 2.], [3., 4.]])
-    moving = fixed - 1.
-    vx = np.eye(2)
-    vy = -.5 * vx
-    ux, uy = findupdate(fixed, moving, vx, vy, 1, 1)
-    np.testing.assert_array_almost_equal(ux, [[0., -.333333], [.222222, 0.]])
-    np.testing.assert_array_almost_equal(uy, [[0., .333333], [-.222222, 0.]])

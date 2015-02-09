@@ -1,2 +1,1 @@
-from demons import demons
-
+from demons import *
