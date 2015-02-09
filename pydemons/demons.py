@@ -1,10 +1,10 @@
 """
-How about log-doman diffeomorphic demons in pure python ;)
+How about log-domain diffeomorphic demons in Python ? ;)
 """
-# Author: DOHMATOB Elvis Dopgima
+# Author: DOHMATOB Elvis Dopgima <gmdopp@gmail.com>
 
 import numpy as np
-from scipy import ndimage, linalg
+from scipy import ndimage
 
 # 'texture' of floats in machine-precision
 EPS = np.finfo(float).eps
@@ -101,12 +101,13 @@ def expfield(vx, vy):
     return vx, vy
 
 
-def jacobian(sx, sy):
+def jacobian(sx, sy, add_identity=True):
     """Computes jacobian of given deformation phi = [sx, sy]."""
     gx_x, gx_y = np.gradient(sx)
     gy_x, gy_y = np.gradient(sy)
-    gx_x += 1.
-    gy_y += 1.
+    if add_identity:
+        gx_x += 1.
+        gy_y += 1.
     return gx_x * gy_y - gy_x * gx_y
 
 
@@ -173,30 +174,36 @@ def imagecrop(im, lim_x, lim_y):
     return im[lim_x[0]:lim_x[1], lim_y[0]:lim_y[1]]
 
 
-def bch(vx, vy, ux, uy, order=1):
+def bch(vx, vy, ux, uy, bch_order=0):
     """Backer-Campbell-Hausdorf approximation of log(exp(v) o exp(u)).
+
+    Note that
+    log(exp(v) o exp(u)) = v + u + 1/2 [v, u] + 1/12 [v, [v, u]] + H.O.T
 
     Paremeters
     ----------
-    order: int, which is 1 or 2
-        Number of terms retained in the approximation. order=1 corresponds
-        to a commutativity assumption.
+    bch_order: int, which is 0 or 1 (optional, default 0)
+        The order of the BCH approximation. bch_order=0 corresponds to a
+        commutativity assumption (for speed!).
     """
-    if not order in [1, 2]:
-        raise ValueError("BCH: `order` must be 1 or 2. Got %i." % order)
-    if order == 1:
+    if not bch_order in [0, 1]:
+        raise ValueError(
+            "BCH: `bch_order` must be 0 or 1. Got %i." % bch_order)
+    if bch_order == 0:
+        # commutativity assumption
         vx += ux
         vy += uy
     else:
-        jacu = linalg.det(jacobian(ux, uy))
-        jacv = linalg.det(jacobian(vx, vy))
+        # expand upto linear order. Not that [v, u] = jac(v)u - jac(u)v
+        jacu = jacobian(ux, uy, add_identity=False)
+        jacv = jacobian(vx, vy, add_identity=False)
         vx += ux + .5 * (jacv * ux - jacu * vx)
         vy += uy + .5 * (jacv * uy - jacu * vy)
     return vx, vy
 
 
 def register(fixed, moving, symmetric=True, sigma_fluid=1., sigma_diffusion=1.,
-             sigma_i=1., sigma_x=1., niter=250, vx=None, vy=None,
+             sigma_i=1., sigma_x=1., niter=250, vx=None, vy=None, bch_order=0,
              stop_criterion=.01, imagepad_scale=1.2, callback=None):
     """Register moving image to moving image via log-domains diffeo demons.
 
@@ -240,7 +247,7 @@ def register(fixed, moving, symmetric=True, sigma_fluid=1., sigma_diffusion=1.,
         uy = imgaussian(uy, sigma_fluid)
 
         # update velocity (= log(exp(v) o exp(u))) and then smooth
-        vx, vy = bch(vx, vy, ux, uy, order=2)
+        vx, vy = bch(vx, vy, ux, uy, bch_order=bch_order)
         vx = imgaussian(vx, sigma_diffusion)
         vy = imgaussian(vy, sigma_diffusion)
 
@@ -293,8 +300,9 @@ def imresize(im, scale):
 
 def demons(fixed, moving, nlevel=3, symmetric=True, sigma_fluid=1.,
            sigma_diffusion=1., sigma_i=1., sigma_x=1., niter=250, vx=None,
-           vy=None, stop_criterion=.01, imagepad_scale=1.2, callback=None):
-    """Multi-resolution demons algorithm.
+           vy=None, bch_order=0, stop_criterion=.01, imagepad_scale=1.2,
+           callback=None):
+    """Multi-resolution log-domain diffeomorphic demons algorithm.
 
     Parameters
     ----------
@@ -321,8 +329,9 @@ def demons(fixed, moving, nlevel=3, symmetric=True, sigma_fluid=1.,
         _, _, _, vx_, vy_, _ = register(
             fixed_, moving_, symmetric=symmetric, sigma_fluid=sigma_fluid,
             sigma_diffusion=sigma_diffusion, sigma_i=sigma_i, sigma_x=sigma_x,
-            niter=niter, vx=vx_, vy=vy_, stop_criterion=stop_criterion,
-            imagepad_scale=imagepad_scale, callback=callback)
+            niter=niter, vx=vx_, vy=vy_, bch_order=bch_order,
+            stop_criterion=stop_criterion, imagepad_scale=imagepad_scale,
+            callback=callback)
 
         # upsample
         vx = imresize(vx_ / scale, shape / np.array(vx_.shape))

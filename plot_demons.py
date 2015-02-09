@@ -10,6 +10,7 @@ if __name__ == "__main__":
                       dtype=np.float)
 
     # plot input images
+    plt.ion()
     plt.figure(figsize=(13.5, 7))
     plt.gray()
     ax = plt.subplot(141)
@@ -43,4 +44,4 @@ if __name__ == "__main__":
         diff_thumb.set_data(diff)
         plt.draw()
 
-    demons(fixed, moving, callback=_callback, nlevel=8)
+    demons(fixed, moving, callback=_callback)
