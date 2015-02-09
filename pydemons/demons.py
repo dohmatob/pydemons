@@ -376,11 +376,11 @@ if __name__ == "__main__":
     # plot input images
     plt.figure()
     plt.gray()
-    ax = plt.subplot(241)
+    ax = plt.subplot(141)
     ax.set_title("fixed")
     plt.axis("off")
     ax.imshow(fixed)
-    ax = plt.subplot(242)
+    ax = plt.subplot(142)
     ax.set_title("moving")
     plt.axis("off")
     ax.imshow(moving)
@@ -391,11 +391,11 @@ if __name__ == "__main__":
 
     # plot warped image and difference to fixed image
     diff = warped - fixed
-    ax = plt.subplot(243)
+    ax = plt.subplot(143)
     ax.set_title("warped")
     ax.axis("off")
     warped_thumb = ax.imshow(warped)
-    ax = plt.subplot(244)
+    ax = plt.subplot(144)
     ax.set_title("diff")
     ax.axis("off")
     ax.imshow(diff)
