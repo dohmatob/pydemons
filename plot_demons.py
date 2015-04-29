@@ -2,13 +2,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 from pydemons import demons
 
-if __name__ == "__main__":
-    # load data
-    from PIL import Image
-    fixed = np.array(Image.open("data/lenag2.png"), dtype=np.float)
-    moving = np.array(Image.open("data/lenag1.png"),
-                      dtype=np.float)
 
+def run_demons(moving, fixed, **kwargs):
     # plot input images
     plt.ion()
     plt.figure(figsize=(13.5, 7))
@@ -44,4 +39,12 @@ if __name__ == "__main__":
         diff_thumb.set_data(diff)
         plt.draw()
 
-    demons(fixed, moving, callback=_callback)
+    return demons(fixed, moving, callback=_callback, **kwargs)
+
+if __name__ == "__main__":
+    # load data
+    from PIL import Image
+    fixed = np.array(Image.open("data/lenag2.png"), dtype=np.float)
+    moving = np.array(Image.open("data/lenag1.png"),
+                      dtype=np.float)
+    run_demons(moving, fixed)
