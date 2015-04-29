@@ -267,9 +267,9 @@ def register(fixed, moving, symmetric=True, sigma_fluid=1., sigma_diffusion=1.,
         # invoke callback
         print "Iter %03i/%03i: energy=%g" % (k + 1, niter, e)
         if callback and k % 10 == 0:
-            callback(dict(fixed=orig_fixed,
-                          warped=imagecrop(iminterpolate(moving, sx=sx, sy=sy),
-                                           lim_x, lim_y)))
+            variables = locals()
+            variables["fixed"] = orig_fixed
+            callback(variables)
 
         # check convergence
         if k > 0 and abs(e - energies[max(0, k - 5)]) < \
